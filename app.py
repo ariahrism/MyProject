@@ -1,6 +1,7 @@
 import os
-from bottle import route, run, request, response
 import sys
+
+from bottle import route, run, request, response
 
 my_env = os.getenv('my_env')
 
@@ -68,6 +69,6 @@ def wrike(path=''):
 
 # if __name__ == "__main__":
 if my_env == 'local':
-    run(host='localhost', port=int(os.environ.get('PORT', 80)))
+    run(host='localhost', port=int(os.environ.get('PORT', 8080)))
 else:
     run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
