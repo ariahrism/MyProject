@@ -15,8 +15,11 @@ def landing():
         else:
             response.set_cookie("wrike_refresh_token", wrike.creds.refresh_token, max_age=3600)  # make expire date a dynamic duration TODO
 
-    wrikepage = "/wrike/timelogs/"
-    return 'What do you want to do? <br> <br> <a href="' + wrikepage + '">Run timelog report.</a>'
+    timelog_page = "/wrike/timelogs/"
+    project_status_page = "/wrike/projectstatus/"
+    return 'What do you want to do? <br> <br> ' \
+           '<a href="' + timelog_page + '">Run timelog report.</a> <br>' + \
+           '<a href="' + project_status_page + '">Run project status report.</a> <br>'
 
 
 @route('/wrike/<path>/')
@@ -39,7 +42,7 @@ def wrike(path=''):
             response.set_cookie("wrike_refresh_token", wrike.creds.refresh_token, max_age=3600)  # make expire date a dynamic duration TODO
 
         if path == 'timelogs':
-            timelog_list = wrike.make_table()
+            timelog_list = wrike.get_timelog_table()
             import my_google
             sheets = my_google.session
             workbook_url = 'https://docs.google.com/spreadsheets/d/1tkjX3EL8LhftztrM0FR2gRJH6foC6zCFCHY4fdrKjVY/edit#gid=0'
@@ -48,6 +51,9 @@ def wrike(path=''):
             sheets.clear_sheet()
             sheets.upload_table(timelog_list, start_row=2)
             return 'Your sheet was updated at <a href="{}">{}</a>'.format(workbook_url, workbook_url)
+
+        if path == 'projectstatus':
+            wrike.get_project_details()
 
     except Exception as e:
         exc_type, exc_value, exc_traceback = sys.exc_info()

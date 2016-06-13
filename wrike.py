@@ -1,8 +1,8 @@
 import logging
 import os
-from datetime import datetime, timedelta
-import time
 import requests
+import time
+from datetime import datetime, timedelta
 
 my_env = os.getenv('my_env')
 
@@ -89,7 +89,7 @@ def get_data(call, params=None):
         headers = {'Authorization': creds.token_type + ' ' + creds.access_token}
         r = requests.get(base_url + call, headers=headers, params=params)
         creds.api_call()
-        # print r.url
+        print r.url
         if r.status_code != 200:
             print 'error, response: ', r.status_code
             print r.json()
@@ -99,19 +99,19 @@ def get_data(call, params=None):
             if not creds.refresh():
                 return False
         tries -= 1
-    return r.json()
+    return r.json()['data']
 
 
 creds = new_creds()
 
 
-def make_table():
+def get_timelog_table():
     """
     First, make unique lists to iterate through (to save on API calls) then iterate though the unique lists, and attach them to "timelogs" json/dictionary
     :return:
     """
 
-    timelogs = get_data('/timelogs')['data']
+    timelogs = get_data('/timelogs')
     print len(timelogs)
     task_list = []
     user_list = []
@@ -124,7 +124,7 @@ def make_table():
     unique_users = list(set(user_list))
 
     unique_tasks_csv = ','.join(map(str, unique_tasks))
-    task_details = get_data('/tasks/' + unique_tasks_csv)['data']  # todo need to batch if its over 100 tasks
+    task_details = get_data('/tasks/' + unique_tasks_csv)  # todo need to batch if its over 100 tasks
 
     super_task_dictionary = []  # create a dictionary of super task details
     task_details_copy = task_details
@@ -137,7 +137,7 @@ def make_table():
                 # if this super task id is already in the dictionary, just skip
                 continue
 
-            super_task_details = get_data('/tasks/' + super_task_id)['data'][0]
+            super_task_details = get_data('/tasks/' + super_task_id)[0]
             task_details.append(super_task_details)
 
             if 'customFields' in super_task_details and len(super_task_details['customFields']) > 0:
@@ -153,7 +153,7 @@ def make_table():
     user_dictionary = []  # create a dictionary of user data (first name for now)
     for user in unique_users:
         user_details = get_data('/users/' + user)
-        user_dictionary.append({'id': user, 'user_name': user_details['data'][0]['firstName']})
+        user_dictionary.append({'id': user, 'user_name': user_details[0]['firstName']})
 
     for log in timelogs:  # for each log, add the task data, then user data (first name)
         for task in task_details:
@@ -200,3 +200,8 @@ def make_table():
              log['task_opp_id'], log['super_task_title'], log['task_title'], '%.2f' % log['hours'], log['comment'], log['task_url']])
 
     return output
+
+
+def get_project_details():
+    print get_data('/accounts/IEAAYQ33/folders', params={'project': 'true'})
+    pass
