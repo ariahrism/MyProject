@@ -1,8 +1,11 @@
 import logging
 import os
-import requests
 import time
 from datetime import datetime, timedelta
+
+import requests
+
+import google
 
 my_env = os.getenv('my_env')
 
@@ -14,7 +17,15 @@ client_secret = os.environ.get('wrike_client_secret')
 pjm_folder = 'IEAAYQ33I4CX7X5T'
 
 
-class new_creds:
+def wrike_to_google(date):
+    return str(datetime.fromtimestamp(time.mktime(time.strptime(date[:19], "%Y-%m-%dT%H:%M:%S"))) + timedelta(hours=9))
+
+
+def wrike_to_datetime(date):
+    return datetime.fromtimestamp(time.mktime(time.strptime(date[:19], "%Y-%m-%dT%H:%M:%S"))) + timedelta(hours=9)
+
+
+class NewCreds(object):
     access_token = ''
     refresh_token = ''
     token_type = ''
@@ -47,7 +58,7 @@ class new_creds:
                                 'client_secret': client_secret,
                                 'grant_type': 'authorization_code',
                                 'code': auth_code})
-        self.api_call()
+        self.rate_limiter()
         if r.status_code != 200:
             return False
         else:
@@ -59,7 +70,7 @@ class new_creds:
                                                                       'client_secret': client_secret,
                                                                       'grant_type': 'refresh_token',
                                                                       'refresh_token': self.refresh_token})
-        self.api_call()
+        self.rate_limiter()
         if r.status_code != 200:
             return False
         else:
@@ -67,7 +78,7 @@ class new_creds:
             self.expire_date = datetime.now() + timedelta(seconds=3600)  # should change this to the json field
             return True
 
-    def api_call(self):
+    def rate_limiter(self):
         new_time = datetime.now()
         self.time_diffs.append((new_time - self.last_api_call).microseconds / 1000000.0)
         self.last_api_call = new_time
@@ -77,7 +88,10 @@ class new_creds:
 
         self.rate_limit_track = len(self.time_diffs) / (sum(self.time_diffs) if sum(self.time_diffs) is not 0 else 0.00001)
         if self.rate_limit_track > 10:
-            print '%.2f' % self.rate_limit_track
+            print 'rate @', '%.2f' % self.rate_limit_track
+        if self.rate_limit_track > 80:
+            print 'sleeping'
+            time.sleep(1)
         return self.rate_limit_track
 
 
@@ -88,8 +102,8 @@ def get_data(call, params=None):
     while no_success and tries != 0:
         headers = {'Authorization': creds.token_type + ' ' + creds.access_token}
         r = requests.get(base_url + call, headers=headers, params=params)
-        creds.api_call()
-        print r.url
+        creds.rate_limiter()
+        # print r.url
         if r.status_code != 200:
             print 'error, response: ', r.status_code
             print r.json()
@@ -102,7 +116,7 @@ def get_data(call, params=None):
     return r.json()['data']
 
 
-creds = new_creds()
+creds = NewCreds()
 
 
 def get_timelog_table():
@@ -111,8 +125,8 @@ def get_timelog_table():
     :return:
     """
 
-    timelogs = get_data('/timelogs')
-    print len(timelogs)
+    timelogs = get_data('/accounts/IEAAYQ33/timelogs')
+    print '# timelogs:', len(timelogs)
     task_list = []
     user_list = []
 
@@ -196,12 +210,126 @@ def get_timelog_table():
     output = []
     for log in timelogs:  # log
         output.append(
-            [str(datetime.fromtimestamp(time.mktime(time.strptime(log['createdDate'][:19], "%Y-%m-%dT%H:%M:%S"))) + timedelta(hours=9)), log['user_name'],
+            [wrike_to_google(log['createdDate']), log['user_name'],
              log['task_opp_id'], log['super_task_title'], log['task_title'], '%.2f' % log['hours'], log['comment'], log['task_url']])
 
     return output
 
 
 def get_project_details():
-    print get_data('/accounts/IEAAYQ33/folders', params={'project': 'true'})
+    folder_list = get_data('/accounts/IEAAYQ33/folders', params={'project': 'false'})
+    for folder in folder_list:
+        if folder['id'] != 'IEAAYQ33I4CVHNJC' and folder['id'] != 'IEAAYQ33I4CVHQOZ':  # not archive folders
+            print folder['id'], folder['title']
+            task_list = get_data('/folders/' + folder['id'] + '/tasks', params={'fields': '["superTaskIds"]'})
+            for task in task_list:
+                if 'superTaskIds' in task and len(task['superTaskIds']) > 0:
+                    print task
+                    print task['id'], task['title']
+    # on hold while doing assessment turnaround time
+    # TODO: finish project dashboard
+    pass
+
+
+class TrackAssessments(object):
+    def __init__(self):
+        self.tracking = google.NewSession()
+        self.tracking.open_workbook('https://docs.google.com/a/gengo.com/spreadsheets/d/1_rlW7jHDNw-_-czet0WeO834n2alyn--U9lcJIHZSPY/edit?usp=sharing')
+        self.tracking.open_worksheet('Tracking Sheet')
+        self.logging = google.NewSession()
+        self.logging.open_workbook('https://docs.google.com/a/gengo.com/spreadsheets/d/1_rlW7jHDNw-_-czet0WeO834n2alyn--U9lcJIHZSPY/edit?usp=sharing')
+        self.pending_requests = None
+        self.task_details = None
+        self.new_request = False
+        self.assessment_provided = False
+
+    def get_requests_from_wrike(self):
+        new_requests = get_data('/folders/IEAAYQ33I4CVHLZI/tasks')
+        # for task in list(new_requests):
+        #     if task['customStatusId'] != 'IEAAYQ33JMAAAAAA':  # don't return requests that have already have a status
+        #         new_requests.remove(task)
+        return new_requests
+
+    @google.retry
+    def append_new_requests(self):
+        self.new_request = False
+        for task in self.get_requests_from_wrike():
+            if not self.tracking.find(task['id']):
+                self.new_request = True
+                self.tracking.append_row([task['id'], task['title']])  # , wrike_to_google(task['createdDate']), task['title']])
+
+    @google.retry
+    def get_pending_requests(self):
+        all_cells = self.tracking.worksheet.col_values(1)
+        for item in list(all_cells):
+            if item == None or item == '':
+                all_cells.remove(item)
+        self.pending_requests = all_cells
+
+    def check_request_status(self):
+        if len(self.pending_requests) == 0:
+            self.task_details = []
+            return
+        request_csv = ','.join(map(str, self.pending_requests))
+        self.task_details = get_data('/tasks/' + request_csv)  # todo need to batch if its over 100 tasks
+
+    @google.retry
+    def insert_assessed_request(self):
+        self.assessment_provided = False
+        inbound_folder_id = 'IEAAYQ33I4CVHLZI'
+        for task in self.task_details:
+            print task
+            if inbound_folder_id not in task[
+                'parentIds']:  # task['customStatusId'] != 'IEAAYQ33JMAAAAAA':  # print wrike.get_data('/accounts/IEAAYQ33/workflows')
+                self.assessment_provided = True
+                ctime = wrike_to_datetime(task['createdDate'])
+                self.logging.open_worksheet('Tasks W' + str(ctime.isocalendar()[1]), force=True)
+                self.logging.append_row([wrike_to_google(task['createdDate']), task['title'], datetime.today(), task['permalink']])
+                try:
+                    self.pending_requests.remove(task['id'])
+                except:
+                    pass
+
+    @google.retry
+    def rewrite_tracking_sheet(self):
+        self.tracking.worksheet.resize(1, 1)  # dangerous if lost auth, can use @google.retry
+        table_of_pending_requests = []
+
+        for task_id in self.pending_requests:
+            task = get_data('/tasks/' + task_id)[0]
+            table_of_pending_requests.append([task_id, task['title']])
+        # print table_of_pending_requests
+        self.tracking.upload_table(table_of_pending_requests)
+
+    def do(self):
+        # get current requests, and created times
+        # append them to the bottom if not already in sheet
+        # check statuses of all the requests
+        # if exists, record current time and add it to the W## sheet based on created week
+        # each time we add to the W## sheet, remove it from pending_requests
+        # overwrite pending requests sheet
+        # print ''
+        print 'appending new,',
+        self.append_new_requests()
+        print 'get known pending,',
+        self.get_pending_requests()
+        print 'checking status,',
+        self.check_request_status()
+        print 'processing assessed,',
+        self.insert_assessed_request()
+        print 'rewrite pending,',
+        if self.new_request or self.assessment_provided:
+            self.rewrite_tracking_sheet()
+        print 'finished.'
+
+
+def track_wrike():
+    assessment_tracking = TrackAssessments()
+    while True:
+        assessment_tracking.do()
+        print 'end of loop. sleeping',
+        for step in list(reversed(range(1, 10))):
+            print step,
+            time.sleep(1)
+        print ''
     pass
